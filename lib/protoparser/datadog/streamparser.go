@@ -2,8 +2,10 @@ package datadog
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"io"
+	"regexp"
 	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
@@ -16,6 +18,15 @@ import (
 
 // The maximum request size is defined at https://docs.datadoghq.com/api/latest/metrics/#submit-metrics
 var maxInsertRequestSize = flagutil.NewBytes("datadog.maxInsertRequestSize", 64*1024*1024, "The maximum size in bytes of a single DataDog POST request to /api/v1/series")
+
+var sanitizeMetricName = flag.Bool("datadog.sanitizeMetricName", false, "")
+
+var (
+	//If all metrics in Datadog have the same naming schema as custom metrics, then the follow rules apply: https://docs.datadoghq.com/metrics/custom_metrics/#naming-custom-metrics
+	invalidMetricNameCharRE     = regexp.MustCompile(`[^a-zA-Z0-9_.]`)
+	consecutiveUnderscores      = regexp.MustCompile(`_+`)
+	underscoresBeforeOrAfterDot = regexp.MustCompile(`_?\._?`)
+)
 
 // ParseStream parses DataDog POST request for /api/v1/series from reader and calls callback for the parsed request.
 //
@@ -52,6 +63,9 @@ func ParseStream(r io.Reader, contentEncoding string, callback func(series []Ser
 	series := req.Series
 	for i := range series {
 		rows += len(series[i].Points)
+		if *sanitizeMetricName {
+			series[i].Metric = sanitizeName(series[i].Metric)
+		}
 	}
 	rowsRead.Add(rows)
 
@@ -136,3 +150,15 @@ func putRequest(req *Request) {
 }
 
 var requestPool sync.Pool
+
+func sanitizeName(metric string) string {
+	//#before.dot.metric!.name                      --> before.dot.metric.name
+	//#after.dot.metric.!name                       --> after.dot.metric.name
+	//#in.the.middle.met!ric.name                   --> in.the.middle.met_ric.name
+	//#before.and.after.and.middle.met!ric!.!name   --> before.and.after.and.middle.met_ric.name
+	//#many.consecutive.met!!!!ric!!.!!name         --> many.consecutive.met_ric.name
+	//#many.non.consecutive.m!e!t!r!i!c!.!name      --> many.non.consecutive.m_e_t_r_i_c.name
+	//#how.about.underscores_.!_metric!_!.__!!name  --> how.about.underscores.metric.name
+	//#how.about.underscores.middle.met!_!_ric.name --> how.about.underscores.middle.met_ric.name
+	return underscoresBeforeOrAfterDot.ReplaceAllString(consecutiveUnderscores.ReplaceAllString(invalidMetricNameCharRE.ReplaceAllString(metric, "_"), "_"), "")
+}
