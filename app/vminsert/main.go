@@ -184,6 +184,9 @@ func requestHandler(w http.ResponseWriter, r *http.Request) bool {
 		// This is not our link.
 		return false
 	}
+
+	logger.Infof("request received with path: %s", r.URL.Path)
+
 	at, err := auth.NewToken(p.AuthToken)
 	if err != nil {
 		httpserver.Errorf(w, r, "auth error: %s", err)
